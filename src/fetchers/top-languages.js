@@ -77,8 +77,7 @@ const CONTRIBUTED_REPO_FIELDS = `
 /**
  * Contributor info fetcher object.
  *
- * Fetches the user id, the number of owned repositories and the organizations
- * the user belongs to.
+ * Fetches the user id and the number of owned repositories.
  *
  * @param {any} variables Fetcher variables.
  * @param {string} token GitHub token.
@@ -94,6 +93,30 @@ const contributorFetcher = (variables, token) => {
           repositories(ownerAffiliations: OWNER, isFork: false) {
             totalCount
           }
+        }
+      }
+      `,
+      variables,
+    },
+    {
+      Authorization: `token ${token}`,
+    },
+  );
+};
+
+/**
+ * Organizations fetcher object. Requires the read:org scope.
+ *
+ * @param {any} variables Fetcher variables.
+ * @param {string} token GitHub token.
+ * @returns {Promise<import("axios").AxiosResponse>} Organizations fetcher response.
+ */
+const orgsFetcher = (variables, token) => {
+  return request(
+    {
+      query: `
+      query userInfo($login: String!) {
+        user(login: $login) {
           organizations(first: 100) {
             nodes {
               login
@@ -202,9 +225,18 @@ const throwOnErrors = (res) => {
  * @returns {Promise<any[]>} Repository nodes shaped like the owner repo query.
  */
 const fetchContributedRepoNodes = async (username) => {
-  const userRes = await retryer(contributorFetcher, { login: username });
+  const [userRes, orgsRes] = await Promise.all([
+    retryer(contributorFetcher, { login: username }),
+    retryer(orgsFetcher, { login: username }),
+  ]);
   throwOnErrors(userRes);
-  const { id, repositories, organizations } = userRes.data.data.user;
+  const { id, repositories } = userRes.data.data.user;
+  // listing organizations needs the read:org scope, so continue with owned and
+  // collaborator repositories when the token lacks it
+  if (orgsRes.data.errors) {
+    logger.error(orgsRes.data.errors);
+  }
+  const organizations = orgsRes.data.data?.user?.organizations?.nodes || [];
 
   // counting authored commits is slow, so split the owned repositories into
   // two halves fetched from both ends of the name order in parallel
@@ -222,7 +254,7 @@ const fetchContributedRepoNodes = async (username) => {
   ].map((variables) =>
     retryer(userReposFetcher, { login: username, id, ...variables }),
   );
-  const orgRequests = organizations.nodes.map((org) =>
+  const orgRequests = organizations.map((org) =>
     retryer(orgReposFetcher, { org: org.login, id }),
   );
 

@@ -60,7 +60,80 @@ const error = {
   ],
 };
 
+const contributedRepo = (name, language, size, authored, total) => ({
+  name,
+  nameWithOwner: `owner/${name}`,
+  languages: {
+    edges: [{ size, node: { color: "#000", name: language } }],
+  },
+  defaultBranchRef: {
+    target: {
+      authored: { totalCount: authored },
+      history: { totalCount: total },
+    },
+  },
+});
+
+const mockContributedRepos = (orgsResponse) => {
+  mock.onPost("https://api.github.com/graphql").reply((config) => {
+    const { query, variables } = JSON.parse(config.data);
+    if (query.includes("organizations(")) {
+      return [200, orgsResponse];
+    }
+    if (query.includes("organization(login")) {
+      return [
+        200,
+        {
+          data: {
+            organization: {
+              repositories: {
+                nodes: [contributedRepo("org-repo", "Kotlin", 200, 1, 2)],
+              },
+            },
+          },
+        },
+      ];
+    }
+    if (query.includes("$affiliation")) {
+      const nodes =
+        variables.affiliation === "OWNER"
+          ? [
+              contributedRepo("own-repo", "TypeScript", 100, 10, 10),
+              contributedRepo("untouched-repo", "HTML", 999, 0, 5),
+            ]
+          : [contributedRepo("team-repo", "Java", 400, 1, 4)];
+      return [200, { data: { user: { repositories: { nodes } } } }];
+    }
+    return [
+      200,
+      { data: { user: { id: "U_1", repositories: { totalCount: 1 } } } },
+    ];
+  });
+};
+
 describe("FetchTopLanguages", () => {
+  it("should count contributed repositories weighted by the user's commit share", async () => {
+    mockContributedRepos({
+      data: { user: { organizations: { nodes: [{ login: "org" }] } } },
+    });
+
+    const repo = await fetchTopLanguages("anuraghazra", [], 1, 0, true);
+    expect(repo).toStrictEqual({
+      TypeScript: { color: "#000", count: 1, name: "TypeScript", size: 100 },
+      Java: { color: "#000", count: 1, name: "Java", size: 100 },
+      Kotlin: { color: "#000", count: 1, name: "Kotlin", size: 100 },
+    });
+  });
+
+  it("should skip organizations when the token cannot list them", async () => {
+    mockContributedRepos({
+      errors: [{ type: "INSUFFICIENT_SCOPES", message: "read:org required" }],
+    });
+
+    const repo = await fetchTopLanguages("anuraghazra", [], 1, 0, true);
+    expect(Object.keys(repo).sort()).toStrictEqual(["Java", "TypeScript"]);
+  });
+
   it("should fetch correct language data while using the new calculation", async () => {
     mock.onPost("https://api.github.com/graphql").reply(200, data_langs);
 
